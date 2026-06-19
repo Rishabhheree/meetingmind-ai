@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useLocation } from 'wouter';
-import { useAuth } from '@/providers/supabase-provider';
+import { useAuth } from '@/providers/auth-provider';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -22,25 +22,13 @@ export default function SignUpPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-
-    if (password !== confirmPassword) {
-      setError('Passwords do not match');
-      return;
-    }
-
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters');
-      return;
-    }
-
+    if (password !== confirmPassword) { setError('Passwords do not match'); return; }
+    if (password.length < 6) { setError('Password must be at least 6 characters'); return; }
     setLoading(true);
-
     try {
       await signUp(email, password, name);
       setSuccess(true);
-      setTimeout(() => {
-        navigate('/dashboard');
-      }, 2000);
+      setTimeout(() => navigate('/dashboard'), 1500);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign up failed');
     } finally {
@@ -57,8 +45,7 @@ export default function SignUpPage() {
               <CheckCircle className="h-8 w-8 text-green-600" />
             </div>
             <h2 className="text-2xl font-bold mb-2">Account Created!</h2>
-            <p className="text-muted-foreground mb-4">Please check your email to verify your account.</p>
-            <p className="text-sm text-muted-foreground">Redirecting to dashboard...</p>
+            <p className="text-muted-foreground">Redirecting to dashboard...</p>
           </CardContent>
         </Card>
       </div>
@@ -75,11 +62,10 @@ export default function SignUpPage() {
           <h1 className="text-3xl font-bold">MeetingMind AI</h1>
           <p className="text-muted-foreground mt-2">Enterprise Meeting Intelligence</p>
         </div>
-
         <Card className="border-border/50 shadow-lg">
           <CardHeader>
             <CardTitle>Create Account</CardTitle>
-            <CardDescription>Enter your information to create an account</CardDescription>
+            <CardDescription>All data is stored locally in your browser</CardDescription>
           </CardHeader>
           <form onSubmit={handleSubmit}>
             <CardContent className="space-y-4">
@@ -91,61 +77,29 @@ export default function SignUpPage() {
               )}
               <div className="space-y-2">
                 <Label htmlFor="name">Full Name</Label>
-                <Input
-                  id="name"
-                  type="text"
-                  placeholder="John Doe"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  required
-                  autoFocus
-                />
+                <Input id="name" type="text" placeholder="John Doe" value={name} onChange={(e) => setName(e.target.value)} required autoFocus />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
+                <Input id="email" type="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Minimum 8 characters"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+                <Input id="password" type="password" placeholder="Minimum 6 characters" value={password} onChange={(e) => setPassword(e.target.value)} required />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="confirmPassword">Confirm Password</Label>
-                <Input
-                  id="confirmPassword"
-                  type="password"
-                  placeholder="Confirm your password"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  required
-                />
+                <Label htmlFor="confirm">Confirm Password</Label>
+                <Input id="confirm" type="password" placeholder="Confirm your password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
               </div>
             </CardContent>
             <CardFooter className="flex flex-col gap-4">
               <Button type="submit" className="w-full" disabled={loading}>
-                {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Create Account
+                {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Create Account
               </Button>
-              <div className="text-sm text-center text-muted-foreground">
+              <p className="text-sm text-center text-muted-foreground">
                 Already have an account?{' '}
-                <a href="/auth/signin" className="text-primary hover:underline">
-                  Sign in
-                </a>
-              </div>
+                <a href="/auth/signin" className="text-primary hover:underline">Sign in</a>
+              </p>
             </CardFooter>
           </form>
         </Card>

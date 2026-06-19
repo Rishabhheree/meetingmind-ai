@@ -1,156 +1,88 @@
 import { useEffect, useState } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { AppLayout } from '@/components/layout/app-layout';
-import { useAuth } from '@/providers/supabase-provider';
+import { useAuth } from '@/providers/auth-provider';
+import {
+  getMeetingById, getTranscriptByMeeting, getTranscriptSegments, getActionItems,
+  getMeetingSummary, deleteMeeting, exportTranscriptAsText,
+  type MeetingRecord, type TranscriptRecord, type TranscriptSegmentRecord,
+  type ActionItemRecord, type MeetingSummaryRecord,
+} from '@/lib/db';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import {
-  ArrowLeft,
-  Play,
-  Download,
-  Clock,
-  Users,
-  FileText,
-  CheckCircle,
-  ListTodo,
-  MessageSquare,
-  Trash2,
-  Loader2,
-} from 'lucide-react';
+import { ArrowLeft, Play, Download, Clock, Users, FileText, CheckCircle, ListTodo, MessageSquare, Trash2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
-
-interface Meeting {
-  id: string;
-  name: string;
-  description: string | null;
-  status: string;
-  started_at: string | null;
-  ended_at: string | null;
-  duration_seconds: number | null;
-  profiles: { id: string; name: string; email: string } | null;
-  meeting_participants: Array<{ id: string; display_name: string; is_host: boolean }>;
-  transcripts: Array<{
-    id: string;
-    duration_seconds: number;
-    word_count: number;
-    speaker_count: number;
-    transcript_segments: TranscriptSegment[];
-  }>;
-  meeting_summaries: Array<{
-    id: string;
-    summary: string;
-    key_topics: string[];
-    decisions: string[];
-    action_items: Array<{ title: string; description?: string; priority: string }>;
-  }>;
-  action_items: Array<{
-    id: string;
-    title: string;
-    description: string | null;
-    status: string;
-    priority: string;
-  }>;
-}
-
-interface TranscriptSegment {
-  id: string;
-  speaker_name: string;
-  text: string;
-  speaker_confidence: number;
-  is_unknown_speaker: boolean;
-  start_offset_seconds: number;
-}
 
 export default function MeetingDetailsPage() {
   const params = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const { user, loading } = useAuth();
-  const [meeting, setMeeting] = useState<Meeting | null>(null);
-  const [loadingMeeting, setLoadingMeeting] = useState(true);
+  const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptRecord | null>(null);
+  const [segments, setSegments] = useState<TranscriptSegmentRecord[]>([]);
+  const [actionItems, setActionItems] = useState<ActionItemRecord[]>([]);
+  const [summary, setSummary] = useState<MeetingSummaryRecord | null>(null);
+  const [loadingData, setLoadingData] = useState(true);
 
   useEffect(() => {
     if (!loading && !user) navigate('/auth/signin');
   }, [user, loading, navigate]);
 
   useEffect(() => {
-    async function fetchMeeting() {
-      try {
-        const res = await fetch(`/api/meetings/${params.id}`);
-        const data = await res.json();
-        if (data.error) navigate('/meetings');
-        else setMeeting(data.meeting);
-      } catch {
-        navigate('/meetings');
-      } finally {
-        setLoadingMeeting(false);
-      }
-    }
-    if (params.id && user) fetchMeeting();
+    if (!params.id || !user) return;
+    Promise.all([
+      getMeetingById(params.id),
+      getTranscriptByMeeting(params.id),
+      getActionItems(params.id),
+      getMeetingSummary(params.id),
+    ]).then(async ([m, t, a, s]) => {
+      if (!m) { navigate('/meetings'); return; }
+      setMeeting(m);
+      setTranscript(t || null);
+      setActionItems(a);
+      setSummary(s || null);
+      if (t) setSegments(await getTranscriptSegments(t.id));
+      setLoadingData(false);
+    });
   }, [params.id, user, navigate]);
 
-  const formatDate = (dateStr: string) =>
-    new Date(dateStr).toLocaleString(undefined, {
-      year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-
-  const formatDuration = (seconds: number) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    if (hrs > 0) return `${hrs}h ${mins}m`;
-    return `${mins} minutes`;
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
   const handleDelete = async () => {
-    if (!confirm('Are you sure you want to delete this meeting?')) return;
-    try {
-      await fetch(`/api/meetings/${params.id}`, { method: 'DELETE' });
-      toast.success('Meeting deleted');
-      navigate('/meetings');
-    } catch {
-      toast.error('Failed to delete meeting');
-    }
+    if (!params.id || !confirm('Delete this meeting?')) return;
+    await deleteMeeting(params.id);
+    toast.success('Meeting deleted');
+    navigate('/meetings');
   };
 
-  const handleDownload = async (format: 'json' | 'txt' | 'srt') => {
-    const transcript = meeting?.transcripts?.[0];
+  const handleDownload = async (format: 'txt' | 'json') => {
     if (!transcript) { toast.error('No transcript available'); return; }
-    try {
-      const res = await fetch(`/api/transcripts/${transcript.id}?format=${format}`);
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${meeting?.name || 'transcript'}.${format}`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast.error('Download failed');
+    let content: string;
+    let mime: string;
+    if (format === 'txt') {
+      content = await exportTranscriptAsText(transcript.id);
+      mime = 'text/plain';
+    } else {
+      content = JSON.stringify({ meeting, segments }, null, 2);
+      mime = 'application/json';
     }
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${meeting?.name || 'transcript'}.${format}`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  if (loadingMeeting || !meeting) {
-    return (
-      <AppLayout>
-        <div className="p-6 lg:p-8 flex items-center justify-center min-h-[50vh]">
-          <Loader2 className="h-8 w-8 animate-spin text-primary" />
-        </div>
-      </AppLayout>
-    );
-  }
+  const formatTime = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  const formatDuration = (s: number) => { const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return h > 0 ? `${h}h ${m}m` : `${m} min`; };
 
-  const transcript = meeting.transcripts?.[0];
-  const segments = transcript?.transcript_segments || [];
-  const summary = meeting.meeting_summaries?.[0];
+  if (loadingData || !meeting) {
+    return <AppLayout><div className="p-6 lg:p-8 flex items-center justify-center min-h-[50vh]"><Loader2 className="h-8 w-8 animate-spin text-primary" /></div></AppLayout>;
+  }
 
   return (
     <AppLayout>
@@ -160,63 +92,44 @@ export default function MeetingDetailsPage() {
             <Button variant="ghost" size="sm" onClick={() => navigate('/meetings')} className="mb-4">
               <ArrowLeft className="h-4 w-4 mr-2" />Back to Meetings
             </Button>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-3xl font-bold tracking-tight">{meeting.name}</h1>
-              <Badge variant={meeting.status === 'active' ? 'default' : meeting.status === 'completed' ? 'secondary' : 'outline'}>
-                {meeting.status}
-              </Badge>
+              <Badge variant={meeting.status === 'active' ? 'default' : meeting.status === 'completed' ? 'secondary' : 'outline'}>{meeting.status}</Badge>
             </div>
             {meeting.description && <p className="text-muted-foreground mt-2">{meeting.description}</p>}
           </div>
           <div className="flex gap-2">
-            {meeting.status === 'active' && (
-              <Button onClick={() => navigate(`/meetings/${meeting.id}/room`)}>
-                <Play className="h-4 w-4 mr-2" />Join Meeting
-              </Button>
+            {meeting.status !== 'completed' && (
+              <Button onClick={() => navigate(`/meetings/${meeting.id}/room`)}><Play className="h-4 w-4 mr-2" />Open Room</Button>
             )}
             {transcript && (
-              <Button variant="outline" onClick={() => handleDownload('txt')}>
-                <Download className="h-4 w-4 mr-2" />Export
-              </Button>
+              <Button variant="outline" onClick={() => handleDownload('txt')}><Download className="h-4 w-4 mr-2" />Export</Button>
             )}
-            <Button variant="outline" size="icon" onClick={handleDelete}>
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            <Button variant="outline" size="icon" onClick={handleDelete}><Trash2 className="h-4 w-4" /></Button>
           </div>
         </div>
 
         <div className="grid gap-4 md:grid-cols-4">
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-2 text-muted-foreground"><Clock className="h-4 w-4" /><span className="text-sm">Duration</span></div>
-              <div className="text-2xl font-bold mt-1">{meeting.duration_seconds ? formatDuration(meeting.duration_seconds) : '-'}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-2 text-muted-foreground"><Users className="h-4 w-4" /><span className="text-sm">Participants</span></div>
-              <div className="text-2xl font-bold mt-1">{meeting.meeting_participants?.length || 0}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-2 text-muted-foreground"><MessageSquare className="h-4 w-4" /><span className="text-sm">Words</span></div>
-              <div className="text-2xl font-bold mt-1">{transcript?.word_count || 0}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-2 text-muted-foreground"><CheckCircle className="h-4 w-4" /><span className="text-sm">Action Items</span></div>
-              <div className="text-2xl font-bold mt-1">{meeting.action_items?.length || 0}</div>
-            </CardContent>
-          </Card>
+          {[
+            { label: 'Duration', icon: Clock, value: meeting.duration_seconds ? formatDuration(meeting.duration_seconds) : '-' },
+            { label: 'Words', icon: MessageSquare, value: transcript?.word_count ?? 0 },
+            { label: 'Speakers', icon: Users, value: transcript?.speaker_count ?? 0 },
+            { label: 'Action Items', icon: CheckCircle, value: actionItems.length },
+          ].map((item) => (
+            <Card key={item.label}>
+              <CardContent className="pt-6">
+                <div className="flex items-center gap-2 text-muted-foreground"><item.icon className="h-4 w-4" /><span className="text-sm">{item.label}</span></div>
+                <div className="text-2xl font-bold mt-1">{item.value}</div>
+              </CardContent>
+            </Card>
+          ))}
         </div>
 
         <Tabs defaultValue="transcript" className="space-y-4">
           <TabsList>
             <TabsTrigger value="transcript"><FileText className="h-4 w-4 mr-2" />Transcript</TabsTrigger>
             <TabsTrigger value="summary"><MessageSquare className="h-4 w-4 mr-2" />Summary</TabsTrigger>
-            <TabsTrigger value="actions"><ListTodo className="h-4 w-4 mr-2" />Actions</TabsTrigger>
+            <TabsTrigger value="actions"><ListTodo className="h-4 w-4 mr-2" />Actions ({actionItems.length})</TabsTrigger>
           </TabsList>
 
           <TabsContent value="transcript">
@@ -227,79 +140,73 @@ export default function MeetingDetailsPage() {
                     <div className="text-center py-12 text-muted-foreground">
                       <MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" />
                       <p>No transcript available</p>
+                      {meeting.status !== 'completed' && (
+                        <Button variant="link" onClick={() => navigate(`/meetings/${meeting.id}/room`)} className="mt-2">Open meeting room to record</Button>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-3">
-                      {segments.map((segment) => (
-                        <div key={segment.id} className="transcript-line p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors">
+                      {segments.map((seg) => (
+                        <div key={seg.id} className={cn('p-3 rounded-lg transition-colors', seg.is_unknown_speaker ? 'bg-warning/10' : 'bg-secondary/30 hover:bg-secondary/50')}>
                           <div className="flex items-center justify-between mb-1">
                             <div className="flex items-center gap-2">
-                              <span className={cn('speaker-badge', segment.is_unknown_speaker ? 'unknown' : 'known')}>
-                                {segment.speaker_name}
-                              </span>
-                              <span className="text-xs text-muted-foreground">[{formatTime(segment.start_offset_seconds)}]</span>
+                              <span className={cn('speaker-badge', seg.is_unknown_speaker ? 'unknown' : 'known')}>{seg.speaker_name}</span>
+                              <span className="text-xs text-muted-foreground">[{formatTime(seg.start_offset_seconds)}]</span>
                             </div>
-                            <Badge variant="outline" className="text-xs">{Math.round(segment.speaker_confidence * 100)}%</Badge>
+                            <Badge variant="outline" className="text-xs">{Math.round(seg.speaker_confidence * 100)}%</Badge>
                           </div>
-                          <p className="text-sm">{segment.text}</p>
+                          <p className="text-sm">{seg.text}</p>
                         </div>
                       ))}
                     </div>
                   )}
                 </ScrollArea>
+                {transcript && (
+                  <div className="flex gap-2 mt-4 pt-4 border-t">
+                    <Button variant="outline" size="sm" onClick={() => handleDownload('txt')}><Download className="h-4 w-4 mr-1" />TXT</Button>
+                    <Button variant="outline" size="sm" onClick={() => handleDownload('json')}>JSON</Button>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </TabsContent>
 
           <TabsContent value="summary">
-            <div className="grid gap-6 lg:grid-cols-2">
-              <Card>
-                <CardHeader><CardTitle>Summary</CardTitle></CardHeader>
-                <CardContent>
-                  <p className="text-muted-foreground leading-relaxed">{summary?.summary || 'No summary available'}</p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader><CardTitle>Key Topics</CardTitle></CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-2">
-                    {(summary?.key_topics || []).map((topic, i) => (
-                      <Badge key={i} variant="secondary">{topic}</Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardHeader><CardTitle>Decisions</CardTitle></CardHeader>
-                <CardContent>
-                  <ul className="space-y-2">
-                    {(summary?.decisions || []).map((decision, i) => (
-                      <li key={i} className="flex items-start gap-2">
-                        <CheckCircle className="h-4 w-4 mt-0.5 text-green-500" />
-                        <span>{decision}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </CardContent>
-              </Card>
-            </div>
+            {summary ? (
+              <div className="grid gap-6 lg:grid-cols-2">
+                <Card>
+                  <CardHeader><CardTitle>Summary</CardTitle></CardHeader>
+                  <CardContent><p className="text-muted-foreground leading-relaxed">{summary.summary}</p></CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle>Key Topics</CardTitle></CardHeader>
+                  <CardContent><div className="flex flex-wrap gap-2">{summary.key_topics.map((t, i) => <Badge key={i} variant="secondary">{t}</Badge>)}</div></CardContent>
+                </Card>
+                <Card>
+                  <CardHeader><CardTitle>Decisions</CardTitle></CardHeader>
+                  <CardContent>
+                    <ul className="space-y-2">
+                      {summary.decisions.map((d, i) => (
+                        <li key={i} className="flex items-start gap-2"><CheckCircle className="h-4 w-4 mt-0.5 text-green-500" /><span>{d}</span></li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <Card><CardContent className="pt-6 text-center text-muted-foreground py-12"><MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" /><p>No summary available</p></CardContent></Card>
+            )}
           </TabsContent>
 
           <TabsContent value="actions">
             <Card>
-              <CardHeader>
-                <CardTitle>Action Items</CardTitle>
-                <CardDescription>Tasks extracted from the meeting</CardDescription>
-              </CardHeader>
+              <CardHeader><CardTitle>Action Items</CardTitle><CardDescription>Tasks extracted from the meeting</CardDescription></CardHeader>
               <CardContent>
-                {meeting.action_items?.length === 0 ? (
-                  <div className="text-center py-8 text-muted-foreground">
-                    <ListTodo className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No action items extracted</p>
-                  </div>
+                {actionItems.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground"><ListTodo className="h-12 w-12 mx-auto mb-4 opacity-50" /><p>No action items extracted</p></div>
                 ) : (
                   <div className="space-y-2">
-                    {meeting.action_items?.map((item) => (
+                    {actionItems.map((item) => (
                       <div key={item.id} className="flex items-center justify-between p-4 rounded-lg bg-secondary/30">
                         <div>
                           <p className="font-medium">{item.title}</p>

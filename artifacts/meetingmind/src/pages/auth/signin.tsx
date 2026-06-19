@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useLocation } from 'wouter';
-import { useAuth } from '@/providers/supabase-provider';
+import { useAuth } from '@/providers/auth-provider';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -20,7 +20,6 @@ export default function SignInPage() {
     e.preventDefault();
     setError(null);
     setLoading(true);
-
     try {
       await signIn(email, password);
       navigate('/dashboard');
@@ -41,7 +40,6 @@ export default function SignInPage() {
           <h1 className="text-3xl font-bold">MeetingMind AI</h1>
           <p className="text-muted-foreground mt-2">Enterprise Meeting Intelligence</p>
         </div>
-
         <Card className="border-border/50 shadow-lg">
           <CardHeader>
             <CardTitle>Sign In</CardTitle>
@@ -57,39 +55,21 @@ export default function SignInPage() {
               )}
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="you@company.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  autoFocus
-                />
+                <Input id="email" type="email" placeholder="you@company.com" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="Enter your password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                />
+                <Input id="password" type="password" placeholder="Enter your password" value={password} onChange={(e) => setPassword(e.target.value)} required />
               </div>
             </CardContent>
             <CardFooter className="flex flex-col gap-4">
               <Button type="submit" className="w-full" disabled={loading}>
-                {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
-                Sign In
+                {loading && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Sign In
               </Button>
-              <div className="text-sm text-center text-muted-foreground">
+              <p className="text-sm text-center text-muted-foreground">
                 Don&apos;t have an account?{' '}
-                <a href="/auth/signup" className="text-primary hover:underline">
-                  Sign up
-                </a>
-              </div>
+                <a href="/auth/signup" className="text-primary hover:underline">Sign up</a>
+              </p>
             </CardFooter>
           </form>
         </Card>

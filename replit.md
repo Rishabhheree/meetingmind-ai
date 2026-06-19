@@ -1,44 +1,59 @@
-# [Project name]
+# MeetingMind AI
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Enterprise meeting intelligence platform with real-time transcription, speaker identification, and action item extraction — all stored locally in the browser via IndexedDB. No external services or API keys required.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/meetingmind run dev` — run the frontend (Vite dev server)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Frontend: React 19 + Vite, wouter (routing), TanStack Query, shadcn/radix UI
+- Storage: IndexedDB via `idb` library — all data stored in browser, no backend
+- Auth: Local email+password stored in IndexedDB (base64 hash + salt)
+- Recording: MediaRecorder API for mic audio capture
+- Themes: next-themes (light/dark/system)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/meetingmind/src/lib/db.ts` — IndexedDB schema + all CRUD operations (single source of truth)
+- `artifacts/meetingmind/src/providers/auth-provider.tsx` — local auth context (replaces Supabase)
+- `artifacts/meetingmind/src/App.tsx` — routing setup (wouter)
+- `artifacts/meetingmind/src/pages/` — all page components
+- `artifacts/meetingmind/src/components/layout/app-layout.tsx` — sidebar nav layout
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **IndexedDB only** — no Supabase, no API server calls. All meetings, transcripts, speaker profiles stored in browser. User explicitly chose this for offline-first local use.
+- **Local auth** — email+password stored in IndexedDB with simple base64 hash+salt. Session stored in `localStorage` as `meetingmind_user_id`.
+- **MediaRecorder API** — mic audio captured locally for transcript segments; no cloud speech SDK.
+- **Speaker enrollment simulation** — enrollment count increments locally; 30 samples marks user as `enrolled`.
+- **Admin-only users page** — only visible to users with `role: 'admin'`.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Sign in / sign up with local accounts
+- Dashboard with stats (meetings, speakers, action items)
+- Meeting management (create, start, end, delete)
+- Meeting room with real-time mic recording → transcript segments saved to IndexedDB
+- Transcript viewer with TXT/JSON export
+- Analytics dashboard with period filtering
+- Voice enrollment for speaker identification
+- Admin user management (create, delete, view enrollment status)
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Use IndexedDB for all data storage — no Supabase or external services
+- All data stays in the browser (local-first approach)
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- IndexedDB data is browser-local — clearing browser data deletes all meetings/users
+- Default admin: create any account; to get admin role you must create the user via the `createUser` function with `role: 'admin'` directly, or use a seeding approach
+- `artifacts/meetingmind/src/providers/supabase-provider.tsx` still exists but is unused — safe to delete
 
 ## Pointers
 

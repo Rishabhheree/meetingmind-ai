@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'wouter';
 import { AppLayout } from '@/components/layout/app-layout';
-import { useAuth } from '@/providers/supabase-provider';
+import { useAuth } from '@/providers/auth-provider';
+import { getAllUsers, deleteUser, getSpeakerProfile, createUser, type ProfileRecord } from '@/lib/db';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,29 +13,20 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Users, Search, Plus, Edit, Trash2, Building, Shield, Mic2, CheckCircle, UserX, AlertCircle, Loader2 } from 'lucide-react';
+import { Users, Search, Plus, Trash2, Building, Shield, Mic2, CheckCircle, UserX, AlertCircle, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  department: string | null;
-  designation: string | null;
-  employee_id: string | null;
-  role: 'admin' | 'user';
-  speaker_profiles: { enrollment_status: string; confidence: number } | null;
-}
+type UserWithProfile = ProfileRecord & { enrollmentStatus?: string };
 
 export default function UsersPage() {
   const { user: currentUser, profile: currentProfile, loading: authLoading } = useAuth();
   const [, navigate] = useLocation();
-  const [users, setUsers] = useState<User[]>([]);
+  const [users, setUsers] = useState<UserWithProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [roleFilter, setRoleFilter] = useState<'admin' | 'user' | 'all'>('all');
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [newUser, setNewUser] = useState({ name: '', email: '', department: '', designation: '', role: 'user' as 'admin' | 'user', employeeId: '' });
+  const [roleFilter, setRoleFilter] = useState<'all' | 'admin' | 'user'>('all');
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newUser, setNewUser] = useState({ name: '', email: '', password: '', department: '', designation: '', role: 'user' as 'admin' | 'user', employeeId: '' });
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -44,59 +36,44 @@ export default function UsersPage() {
   }, [currentUser, currentProfile, authLoading, navigate]);
 
   const fetchUsers = async () => {
+    setLoading(true);
+    const list = await getAllUsers({ search: search || undefined, role: roleFilter });
+    const enriched = await Promise.all(list.map(async (u) => {
+      const sp = await getSpeakerProfile(u.id);
+      return { ...u, enrollmentStatus: sp?.enrollment_status };
+    }));
+    setUsers(enriched);
+    setLoading(false);
+  };
+
+  useEffect(() => { if (currentUser && currentProfile?.role === 'admin') fetchUsers(); }, [search, roleFilter, currentUser, currentProfile]);
+
+  const handleCreate = async () => {
+    setCreating(true);
+    setError(null);
     try {
-      const params = new URLSearchParams();
-      if (search) params.append('search', search);
-      if (roleFilter !== 'all') params.append('role', roleFilter);
-      const res = await fetch(`/api/users?${params.toString()}`);
-      const data = await res.json();
-      setUsers(data.users || []);
-    } catch { /* ignore */ } finally {
-      setLoading(false);
+      await createUser({ name: newUser.name, email: newUser.email, password: newUser.password || 'Welcome123!', role: newUser.role, department: newUser.department || undefined, designation: newUser.designation || undefined, employee_id: newUser.employeeId || undefined });
+      toast.success('User created successfully');
+      setNewUser({ name: '', email: '', password: '', department: '', designation: '', role: 'user', employeeId: '' });
+      setCreateOpen(false);
+      fetchUsers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to create user');
+    } finally {
+      setCreating(false);
     }
   };
 
-  useEffect(() => { fetchUsers(); }, [search, roleFilter]);
-
-  const handleCreateUser = async () => {
-    setCreating(true);
-    setError(null);
-    const formData = new FormData();
-    formData.append('name', newUser.name);
-    formData.append('email', newUser.email);
-    formData.append('department', newUser.department);
-    formData.append('designation', newUser.designation);
-    formData.append('role', newUser.role);
-    formData.append('employee_id', newUser.employeeId);
-    try {
-      const res = await fetch('/api/users', { method: 'POST', body: formData });
-      const data = await res.json();
-      if (data.error) {
-        setError(data.error);
-      } else {
-        toast.success('User created successfully');
-        setNewUser({ name: '', email: '', department: '', designation: '', role: 'user', employeeId: '' });
-        setCreateDialogOpen(false);
-        fetchUsers();
-      }
-    } catch { setError('Failed to create user'); } finally { setCreating(false); }
-  };
-
-  const handleDeleteUser = async (userId: string, userName: string) => {
-    if (!confirm(`Are you sure you want to delete ${userName}?`)) return;
-    try {
-      await fetch(`/api/users/${userId}`, { method: 'DELETE' });
-      toast.success('User deleted');
-      fetchUsers();
-    } catch { toast.error('Failed to delete user'); }
+  const handleDelete = async (id: string, name: string) => {
+    if (id === currentUser?.id) { toast.error("You can't delete yourself"); return; }
+    if (!confirm(`Delete ${name}?`)) return;
+    await deleteUser(id);
+    toast.success('User deleted');
+    fetchUsers();
   };
 
   if (authLoading || !currentUser || currentProfile?.role !== 'admin') {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      </div>
-    );
+    return <div className="min-h-screen flex items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary" /></div>;
   }
 
   return (
@@ -107,55 +84,39 @@ export default function UsersPage() {
             <h1 className="text-3xl font-bold tracking-tight">User Management</h1>
             <p className="text-muted-foreground">Manage users and voice enrollments</p>
           </div>
-          <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button><Plus className="h-4 w-4 mr-2" />Add User</Button>
-            </DialogTrigger>
+          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+            <DialogTrigger asChild><Button><Plus className="h-4 w-4 mr-2" />Add User</Button></DialogTrigger>
             <DialogContent className="max-w-md">
               <DialogHeader>
                 <DialogTitle>Create New User</DialogTitle>
-                <DialogDescription>Add a new user to the system. They will receive an email invitation.</DialogDescription>
+                <DialogDescription>Add a new local user account.</DialogDescription>
               </DialogHeader>
               {error && <Alert variant="destructive"><AlertCircle className="h-4 w-4" /><AlertDescription>{error}</AlertDescription></Alert>}
               <div className="space-y-4 py-4">
+                {[
+                  { id: 'name', label: 'Full Name *', placeholder: 'John Doe', key: 'name' },
+                  { id: 'email', label: 'Email *', placeholder: 'john@company.com', key: 'email' },
+                  { id: 'password', label: 'Password', placeholder: 'Leave blank for default', key: 'password' },
+                  { id: 'department', label: 'Department', placeholder: 'Engineering', key: 'department' },
+                  { id: 'designation', label: 'Designation', placeholder: 'Senior Engineer', key: 'designation' },
+                  { id: 'employeeId', label: 'Employee ID', placeholder: 'EMP001', key: 'employeeId' },
+                ].map((f) => (
+                  <div key={f.id} className="space-y-2">
+                    <Label htmlFor={f.id}>{f.label}</Label>
+                    <Input id={f.id} type={f.key === 'password' ? 'password' : f.key === 'email' ? 'email' : 'text'} placeholder={f.placeholder} value={(newUser as any)[f.key]} onChange={(e) => setNewUser({ ...newUser, [f.key]: e.target.value })} />
+                  </div>
+                ))}
                 <div className="space-y-2">
-                  <Label htmlFor="name">Full Name *</Label>
-                  <Input id="name" placeholder="John Doe" value={newUser.name} onChange={(e) => setNewUser({ ...newUser, name: e.target.value })} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email *</Label>
-                  <Input id="email" type="email" placeholder="john@company.com" value={newUser.email} onChange={(e) => setNewUser({ ...newUser, email: e.target.value })} />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Department</Label>
-                    <Input placeholder="Engineering" value={newUser.department} onChange={(e) => setNewUser({ ...newUser, department: e.target.value })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Designation</Label>
-                    <Input placeholder="Senior Engineer" value={newUser.designation} onChange={(e) => setNewUser({ ...newUser, designation: e.target.value })} />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Role</Label>
-                    <Select value={newUser.role} onValueChange={(value: 'admin' | 'user') => setNewUser({ ...newUser, role: value })}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="user">User</SelectItem>
-                        <SelectItem value="admin">Admin</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Employee ID</Label>
-                    <Input placeholder="EMP001" value={newUser.employeeId} onChange={(e) => setNewUser({ ...newUser, employeeId: e.target.value })} />
-                  </div>
+                  <Label>Role</Label>
+                  <Select value={newUser.role} onValueChange={(v: 'admin' | 'user') => setNewUser({ ...newUser, role: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent><SelectItem value="user">User</SelectItem><SelectItem value="admin">Admin</SelectItem></SelectContent>
+                  </Select>
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setCreateDialogOpen(false)}>Cancel</Button>
-                <Button onClick={handleCreateUser} disabled={creating || !newUser.name || !newUser.email}>
+                <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>
+                <Button onClick={handleCreate} disabled={creating || !newUser.name || !newUser.email}>
                   {creating && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}Create User
                 </Button>
               </DialogFooter>
@@ -168,7 +129,7 @@ export default function UsersPage() {
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <Input placeholder="Search users..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-10" />
           </div>
-          <Select value={roleFilter} onValueChange={(value: 'admin' | 'user' | 'all') => setRoleFilter(value)}>
+          <Select value={roleFilter} onValueChange={(v: 'all' | 'admin' | 'user') => setRoleFilter(v)}>
             <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Roles</SelectItem>
@@ -182,6 +143,8 @@ export default function UsersPage() {
           <CardContent className="p-0">
             {loading ? (
               <div className="text-center py-12"><Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" /></div>
+            ) : users.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground"><Users className="h-12 w-12 mx-auto mb-4 opacity-50" /><p>No users found</p></div>
             ) : (
               <Table>
                 <TableHeader>
@@ -190,52 +153,42 @@ export default function UsersPage() {
                     <TableHead>Role</TableHead>
                     <TableHead>Department</TableHead>
                     <TableHead>Voice Status</TableHead>
-                    <TableHead className="w-[100px]"></TableHead>
+                    <TableHead className="w-[60px]" />
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {users.map((user) => (
-                    <TableRow key={user.id}>
+                  {users.map((u) => (
+                    <TableRow key={u.id}>
                       <TableCell>
                         <div className="flex items-center gap-3">
-                          <Avatar>
-                            <AvatarFallback className="bg-primary text-primary-foreground">{user.name?.charAt(0) || 'U'}</AvatarFallback>
-                          </Avatar>
+                          <Avatar><AvatarFallback className="bg-primary text-primary-foreground">{u.name?.charAt(0) || 'U'}</AvatarFallback></Avatar>
                           <div>
-                            <div className="font-medium">{user.name}</div>
-                            <div className="text-sm text-muted-foreground">{user.email}</div>
+                            <div className="font-medium">{u.name}</div>
+                            <div className="text-sm text-muted-foreground">{u.email}</div>
                           </div>
                         </div>
                       </TableCell>
                       <TableCell>
-                        <Badge variant={user.role === 'admin' ? 'default' : 'secondary'}>
-                          {user.role === 'admin' ? <Shield className="h-3 w-3 mr-1" /> : <Users className="h-3 w-3 mr-1" />}
-                          {user.role}
+                        <Badge variant={u.role === 'admin' ? 'default' : 'secondary'}>
+                          {u.role === 'admin' ? <Shield className="h-3 w-3 mr-1" /> : <Users className="h-3 w-3 mr-1" />}{u.role}
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        {user.department ? (
-                          <span className="flex items-center gap-1"><Building className="h-3.5 w-3.5 text-muted-foreground" />{user.department}</span>
-                        ) : <span className="text-muted-foreground">-</span>}
+                        {u.department ? <span className="flex items-center gap-1"><Building className="h-3.5 w-3.5 text-muted-foreground" />{u.department}</span> : <span className="text-muted-foreground">-</span>}
                       </TableCell>
                       <TableCell>
-                        {user.speaker_profiles?.enrollment_status === 'enrolled' ? (
-                          <Badge variant="default" className="bg-green-600"><CheckCircle className="h-3 w-3 mr-1" />Enrolled</Badge>
-                        ) : user.speaker_profiles?.enrollment_status === 'enrolling' ? (
+                        {u.enrollmentStatus === 'enrolled' ? (
+                          <Badge className="bg-green-600"><CheckCircle className="h-3 w-3 mr-1" />Enrolled</Badge>
+                        ) : u.enrollmentStatus === 'enrolling' ? (
                           <Badge variant="secondary"><Mic2 className="h-3 w-3 mr-1" />In Progress</Badge>
                         ) : (
                           <Badge variant="outline" className="text-muted-foreground"><UserX className="h-3 w-3 mr-1" />Not Enrolled</Badge>
                         )}
                       </TableCell>
                       <TableCell>
-                        <div className="flex items-center gap-1">
-                          <Button variant="ghost" size="icon" onClick={() => navigate(`/admin/users/${user.id}`)}>
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                          <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDeleteUser(user.id, user.name)} disabled={user.id === currentUser?.id}>
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </div>
+                        <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDelete(u.id, u.name)} disabled={u.id === currentUser?.id}>
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
                       </TableCell>
                     </TableRow>
                   ))}
