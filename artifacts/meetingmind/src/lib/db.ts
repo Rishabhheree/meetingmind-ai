@@ -88,6 +88,12 @@ export interface SpeakerProfileRecord {
   updatedAt: string;
 }
 
+export interface VoiceUserRecord {
+  id: string;
+  name: string;
+  createdAt: string;
+}
+
 interface MeetingMindDB extends DBSchema {
   profiles: { key: string; value: ProfileRecord; indexes: { by_email: string } };
   meetings: { key: string; value: MeetingRecord; indexes: { by_created_by: string; by_status: string } };
@@ -97,43 +103,74 @@ interface MeetingMindDB extends DBSchema {
   action_items: { key: string; value: ActionItemRecord; indexes: { by_meeting_id: string; by_status: string } };
   meeting_summaries: { key: string; value: MeetingSummaryRecord; indexes: { by_meeting_id: string } };
   speaker_profiles: { key: string; value: SpeakerProfileRecord; indexes: { by_user_id: string } };
+  voice_users: { key: string; value: VoiceUserRecord };
 }
 
 let dbInstance: IDBPDatabase<MeetingMindDB> | null = null;
 
 async function getDB(): Promise<IDBPDatabase<MeetingMindDB>> {
   if (dbInstance) return dbInstance;
-  dbInstance = await openDB<MeetingMindDB>('meetingmind', 1, {
-    upgrade(db) {
-      const profiles = db.createObjectStore('profiles', { keyPath: 'id' });
-      profiles.createIndex('by_email', 'email', { unique: true });
+  dbInstance = await openDB<MeetingMindDB>('meetingmind', 2, {
+    upgrade(db, oldVersion) {
+      if (oldVersion < 1) {
+        const profiles = db.createObjectStore('profiles', { keyPath: 'id' });
+        profiles.createIndex('by_email', 'email', { unique: true });
 
-      const meetings = db.createObjectStore('meetings', { keyPath: 'id' });
-      meetings.createIndex('by_created_by', 'created_by');
-      meetings.createIndex('by_status', 'status');
+        const meetings = db.createObjectStore('meetings', { keyPath: 'id' });
+        meetings.createIndex('by_created_by', 'created_by');
+        meetings.createIndex('by_status', 'status');
 
-      const participants = db.createObjectStore('meeting_participants', { keyPath: 'id' });
-      participants.createIndex('by_meeting_id', 'meeting_id');
+        const participants = db.createObjectStore('meeting_participants', { keyPath: 'id' });
+        participants.createIndex('by_meeting_id', 'meeting_id');
 
-      const transcripts = db.createObjectStore('transcripts', { keyPath: 'id' });
-      transcripts.createIndex('by_meeting_id', 'meeting_id', { unique: true });
+        const transcripts = db.createObjectStore('transcripts', { keyPath: 'id' });
+        transcripts.createIndex('by_meeting_id', 'meeting_id', { unique: true });
 
-      const segments = db.createObjectStore('transcript_segments', { keyPath: 'id' });
-      segments.createIndex('by_transcript_id', 'transcript_id');
-      segments.createIndex('by_meeting_id', 'meeting_id');
+        const segments = db.createObjectStore('transcript_segments', { keyPath: 'id' });
+        segments.createIndex('by_transcript_id', 'transcript_id');
+        segments.createIndex('by_meeting_id', 'meeting_id');
 
-      const actionItems = db.createObjectStore('action_items', { keyPath: 'id' });
-      actionItems.createIndex('by_meeting_id', 'meeting_id');
-      actionItems.createIndex('by_status', 'status');
+        const actionItems = db.createObjectStore('action_items', { keyPath: 'id' });
+        actionItems.createIndex('by_meeting_id', 'meeting_id');
+        actionItems.createIndex('by_status', 'status');
 
-      const summaries = db.createObjectStore('meeting_summaries', { keyPath: 'id' });
-      summaries.createIndex('by_meeting_id', 'meeting_id');
+        const summaries = db.createObjectStore('meeting_summaries', { keyPath: 'id' });
+        summaries.createIndex('by_meeting_id', 'meeting_id');
 
-      const speakerProfiles = db.createObjectStore('speaker_profiles', { keyPath: 'id' });
-      speakerProfiles.createIndex('by_user_id', 'user_id', { unique: true });
+        const speakerProfiles = db.createObjectStore('speaker_profiles', { keyPath: 'id' });
+        speakerProfiles.createIndex('by_user_id', 'user_id', { unique: true });
+      }
+      if (oldVersion < 2) {
+        db.createObjectStore('voice_users', { keyPath: 'id' });
+      }
     },
   });
   return dbInstance;
+}
+
+// ── Voice Users (enrollment-only, name only) ───────────────────────────────────
+
+export async function getAllVoiceUsers(): Promise<VoiceUserRecord[]> {
+  const db = await getDB();
+  return db.getAll('voice_users');
+}
+
+export async function addVoiceUser(name: string): Promise<VoiceUserRecord> {
+  const db = await getDB();
+  const record: VoiceUserRecord = {
+    id: crypto.randomUUID(),
+    name: name.trim(),
+    createdAt: new Date().toISOString(),
+  };
+  await db.add('voice_users', record);
+  return record;
+}
+
+export async function deleteVoiceUser(id: string): Promise<void> {
+  const db = await getDB();
+  await db.delete('voice_users', id);
+  const sp = await db.getFromIndex('speaker_profiles', 'by_user_id', id);
+  if (sp) await db.delete('speaker_profiles', sp.id);
 }
 
 // Simple password "hash" — XOR + base64 (not production crypto, but works offline)
