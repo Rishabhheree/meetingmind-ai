@@ -22,6 +22,7 @@ import {
   Menu,
   X,
   Mic,
+  Mic2,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
@@ -31,6 +32,7 @@ const navigation = [
   { name: 'Meetings', href: '/meetings', icon: Calendar },
   { name: 'Transcripts', href: '/transcripts', icon: FileText },
   { name: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { name: 'Voice Enrollment', href: '/profile/enrollment', icon: Mic2 },
   { name: 'Users', href: '/admin/users', icon: Users, adminOnly: true },
 ];
 
