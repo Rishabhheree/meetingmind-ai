@@ -3,8 +3,8 @@ import { useParams, useLocation } from 'wouter';
 import { useAuth } from '@/providers/auth-provider';
 import {
   getMeetingById, endMeeting, getTranscriptByMeeting, addTranscriptSegment,
-  getParticipants, getAllUsers, getSpeakerProfile,
-  type MeetingRecord, type MeetingParticipantRecord, type TranscriptSegmentRecord,
+  getParticipants, getAllVoiceUsers, getSpeakerProfile,
+  type MeetingRecord, type MeetingParticipantRecord, type TranscriptSegmentRecord, type VoiceUserRecord,
 } from '@/lib/db';
 import {
   AZURE_CONFIGURED,
@@ -20,8 +20,8 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import {
-  Mic, MicOff, PhoneOff, Users, MessageSquare, Clock, Wifi,
-  WifiOff, AlertCircle, Loader2, UserCheck, UserX, Cloud, HardDrive,
+  Mic, MicOff, PhoneOff, Users, MessageSquare, Clock,
+  AlertCircle, Loader2, UserCheck, UserX,
 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
@@ -37,6 +37,10 @@ export default function MeetingRoomPage() {
 
   const [meeting, setMeeting] = useState<MeetingRecord | null>(null);
   const [participants, setParticipants] = useState<MeetingParticipantRecord[]>([]);
+  const [enrolledUsers, setEnrolledUsers] = useState<VoiceUserRecord[]>([]);
+  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
+  const activeSpeakerRef = useRef<string>('Speaker');
+
   const [loading, setLoading] = useState(true);
   const [isRecording, setIsRecording] = useState(false);
   const [micMuted, setMicMuted] = useState(false);
@@ -55,6 +59,7 @@ export default function MeetingRoomPage() {
   const meetingIdRef = useRef<string | null>(null);
   const interimSegmentIdRef = useRef<string | null>(null);
 
+  // Load meeting + enrolled voice users
   useEffect(() => {
     if (!params.id) return;
     meetingIdRef.current = params.id;
@@ -62,11 +67,29 @@ export default function MeetingRoomPage() {
       getMeetingById(params.id),
       getParticipants(params.id),
       getTranscriptByMeeting(params.id),
-    ]).then(([m, p, t]) => {
+      getAllVoiceUsers(),
+    ]).then(async ([m, p, t, voiceUsers]) => {
       if (!m) { navigate('/meetings'); return; }
       setMeeting(m);
       setParticipants(p);
       if (t) { setTranscriptId(t.id); transcriptIdRef.current = t.id; }
+
+      // Filter to only enrolled users
+      const enrolled: VoiceUserRecord[] = [];
+      for (const vu of voiceUsers) {
+        const sp = await getSpeakerProfile(vu.id);
+        if (sp?.enrollment_status === 'enrolled') enrolled.push(vu);
+      }
+      setEnrolledUsers(enrolled);
+
+      // Default active speaker = first enrolled user, or logged-in user's name
+      if (enrolled.length > 0) {
+        setActiveSpeakerId(enrolled[0].id);
+        activeSpeakerRef.current = enrolled[0].name;
+      } else {
+        activeSpeakerRef.current = profile?.name || 'Speaker';
+      }
+
       setLoading(false);
     });
   }, [params.id, navigate]);
@@ -88,10 +111,14 @@ export default function MeetingRoomPage() {
   }, [liveSegments, savedSegments]);
 
   useEffect(() => {
-    return () => {
-      transcriberRef.current?.stop().catch(() => {});
-    };
+    return () => { transcriberRef.current?.stop().catch(() => {}); };
   }, []);
+
+  // Keep ref in sync whenever activeSpeakerId changes
+  const handleSelectSpeaker = (vu: VoiceUserRecord) => {
+    setActiveSpeakerId(vu.id);
+    activeSpeakerRef.current = vu.name;
+  };
 
   const saveSegment = useCallback(async (seg: LiveSegment) => {
     const txId = transcriptIdRef.current;
@@ -112,12 +139,11 @@ export default function MeetingRoomPage() {
 
   const handleSegment = useCallback((segment: TranscribedSegment) => {
     const id = interimSegmentIdRef.current || crypto.randomUUID();
-
     if (!segment.isFinal) {
       interimSegmentIdRef.current = id;
       setLiveSegments((prev) => {
-        const withoutInterim = prev.filter((s) => s.id !== id);
-        return [...withoutInterim, { ...segment, id }];
+        const without = prev.filter((s) => s.id !== id);
+        return [...without, { ...segment, id }];
       });
     } else {
       interimSegmentIdRef.current = null;
@@ -131,46 +157,29 @@ export default function MeetingRoomPage() {
     setAzureError(null);
     setConnectionStatus('connecting');
 
-    // Gather enrolled participants for speaker identification
-    const enrolledParticipants: EnrolledParticipant[] = [];
-    if (AZURE_CONFIGURED) {
-      try {
-        const allUsers = await getAllUsers();
-        for (const u of allUsers) {
-          const sp = await getSpeakerProfile(u.id);
-          if (sp?.azure_profile_id && sp.enrollment_status === 'enrolled') {
-            enrolledParticipants.push({
-              name: u.name,
-              azureProfileId: sp.azure_profile_id,
-            });
-          }
-        }
-      } catch {
-        // continue even if we can't load participants
-      }
-    }
-
     const onStatusChange = (s: 'connecting' | 'connected' | 'stopped' | 'error') => {
       setConnectionStatus(s);
       if (s === 'connected') setIsRecording(true);
       if (s === 'stopped' || s === 'error') setIsRecording(false);
     };
-
-    const onError = (err: string) => {
-      setAzureError(err);
-    };
+    const onError = (err: string) => setAzureError(err);
 
     let transcriber: AzureTranscriber;
+
     if (AZURE_CONFIGURED) {
-      transcriber = createAzureTranscriber({
-        participants: enrolledParticipants,
-        onSegment: handleSegment,
-        onError,
-        onStatusChange,
-      });
+      const enrolledParticipants: EnrolledParticipant[] = [];
+      try {
+        for (const vu of enrolledUsers) {
+          const sp = await getSpeakerProfile(vu.id);
+          if (sp?.azure_profile_id) {
+            enrolledParticipants.push({ name: vu.name, azureProfileId: sp.azure_profile_id });
+          }
+        }
+      } catch { }
+      transcriber = createAzureTranscriber({ participants: enrolledParticipants, onSegment: handleSegment, onError, onStatusChange });
     } else {
       transcriber = createFallbackTranscriber({
-        displayName: profile?.name || 'Speaker',
+        getDisplayName: () => activeSpeakerRef.current,
         onSegment: handleSegment,
         onError,
         onStatusChange,
@@ -202,6 +211,19 @@ export default function MeetingRoomPage() {
     ...savedSegments.map((s) => ({ ...s, isFinal: true, speakerName: s.speaker_name, isUnknown: s.is_unknown_speaker, confidence: s.speaker_confidence })),
     ...liveSegments,
   ];
+
+  // Unique speaker colors
+  const speakerColors: Record<string, string> = {};
+  const palette = ['bg-blue-100 text-blue-800', 'bg-purple-100 text-purple-800', 'bg-green-100 text-green-800', 'bg-orange-100 text-orange-800', 'bg-pink-100 text-pink-800', 'bg-teal-100 text-teal-800'];
+  let colorIdx = 0;
+  allDisplaySegments.forEach((s) => {
+    if (!s.isUnknown && !speakerColors[s.speakerName]) {
+      speakerColors[s.speakerName] = palette[colorIdx++ % palette.length];
+    }
+  });
+  enrolledUsers.forEach((u) => {
+    if (!speakerColors[u.name]) speakerColors[u.name] = palette[colorIdx++ % palette.length];
+  });
 
   if (loading) {
     return (
@@ -237,38 +259,18 @@ export default function MeetingRoomPage() {
                 : connectionStatus === 'connecting'
                 ? <><Loader2 className="h-3 w-3 animate-spin" /><Badge variant="outline">Connecting…</Badge></>
                 : <Badge variant="outline">Ready</Badge>}
-              <Badge variant="outline" className="hidden sm:flex items-center gap-1">
-                {AZURE_CONFIGURED
-                  ? <><Cloud className="h-3 w-3" />Azure STT</>
-                  : <><HardDrive className="h-3 w-3" />Web Speech</>}
-              </Badge>
             </div>
             <div className="min-w-0">
               <h1 className="font-semibold truncate">{meeting.name}</h1>
-              <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Clock className="h-3 w-3" />{formatTime(elapsedTime)}
-                </span>
-                <span className="flex items-center gap-1">
-                  {connectionStatus === 'connected'
-                    ? <Wifi className="h-3 w-3 text-green-500" />
-                    : connectionStatus === 'error'
-                    ? <WifiOff className="h-3 w-3 text-destructive" />
-                    : <Wifi className="h-3 w-3 text-muted-foreground" />}
-                  {connectionStatus}
-                </span>
-              </div>
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Clock className="h-3 w-3" />{formatTime(elapsedTime)}
+              </span>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0">
             {isRecording && (
-              <Button
-                variant={micMuted ? 'destructive' : 'secondary'}
-                size="icon"
-                onClick={toggleMic}
-                title={micMuted ? 'Unmute mic' : 'Mute mic'}
-              >
+              <Button variant={micMuted ? 'destructive' : 'secondary'} size="icon" onClick={toggleMic} title={micMuted ? 'Unmute mic' : 'Mute mic'}>
                 {micMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
               </Button>
             )}
@@ -295,38 +297,117 @@ export default function MeetingRoomPage() {
       </header>
 
       <div className="flex-1 flex overflow-hidden min-h-0">
-        {/* Participants sidebar */}
-        <aside className="w-56 border-r border-border bg-card hidden lg:flex flex-col p-4 gap-3">
-          <h2 className="text-sm font-semibold flex items-center gap-2">
-            <Users className="h-4 w-4" />Participants ({participants.length})
-          </h2>
-          {participants.map((p) => (
-            <div key={p.id} className="flex items-center gap-2 p-2 rounded-lg bg-secondary/50">
-              <Avatar className="h-7 w-7">
-                <AvatarFallback className="text-xs bg-primary text-primary-foreground">
-                  {p.display_name?.charAt(0) || 'U'}
-                </AvatarFallback>
-              </Avatar>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium truncate">{p.display_name}</p>
-                {p.is_host && <p className="text-xs text-muted-foreground">Host</p>}
+        {/* Left sidebar — Active Speaker */}
+        <aside className="w-56 border-r border-border bg-card hidden lg:flex flex-col gap-4 p-4">
+
+          {/* Active Speaker selector */}
+          {!AZURE_CONFIGURED && (
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                Who's Speaking?
+              </p>
+              {enrolledUsers.length === 0 ? (
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  No enrolled voices yet. Go to <strong>Voice Enrollment</strong> to add people.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {enrolledUsers.map((vu) => {
+                    const isActive = vu.id === activeSpeakerId;
+                    const color = speakerColors[vu.name] ?? 'bg-muted text-foreground';
+                    return (
+                      <button
+                        key={vu.id}
+                        onClick={() => handleSelectSpeaker(vu)}
+                        className={cn(
+                          'w-full flex items-center gap-2.5 px-3 py-2 rounded-lg border text-left text-sm transition-all',
+                          isActive
+                            ? 'border-primary bg-primary text-primary-foreground font-semibold shadow-sm'
+                            : 'border-border bg-card hover:border-primary/40 hover:bg-muted/40 text-foreground'
+                        )}
+                      >
+                        <div className={cn(
+                          'w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0',
+                          isActive ? 'bg-primary-foreground/20 text-primary-foreground' : color
+                        )}>
+                          {vu.name.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="truncate">{vu.name}</span>
+                        {isActive && (
+                          <div className="ml-auto w-2 h-2 rounded-full bg-primary-foreground/80 animate-pulse flex-shrink-0" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {enrolledUsers.length > 0 && (
+                <p className="text-xs text-muted-foreground mt-3 leading-relaxed">
+                  Tap a name before they speak — transcript will use that name.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Participants */}
+          {participants.length > 0 && (
+            <div>
+              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 flex items-center gap-1.5">
+                <Users className="h-3.5 w-3.5" />Participants
+              </h2>
+              <div className="space-y-1.5">
+                {participants.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2 p-2 rounded-lg bg-secondary/50">
+                    <Avatar className="h-7 w-7">
+                      <AvatarFallback className="text-xs bg-primary text-primary-foreground">
+                        {p.display_name?.charAt(0) || 'U'}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{p.display_name}</p>
+                      {p.is_host && <p className="text-xs text-muted-foreground">Host</p>}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
-          ))}
+          )}
         </aside>
 
-        {/* Transcript main area */}
+        {/* Transcript */}
         <main className="flex-1 flex flex-col min-w-0 min-h-0">
           <ScrollArea className="flex-1">
             <div className="p-4 space-y-2 pb-8">
+
+              {/* Mobile: active speaker bar */}
+              {!AZURE_CONFIGURED && enrolledUsers.length > 0 && (
+                <div className="lg:hidden flex items-center gap-2 flex-wrap pb-2 border-b border-border mb-3">
+                  <span className="text-xs text-muted-foreground font-medium flex-shrink-0">Speaking:</span>
+                  {enrolledUsers.map((vu) => (
+                    <button
+                      key={vu.id}
+                      onClick={() => handleSelectSpeaker(vu)}
+                      className={cn(
+                        'px-2.5 py-1 rounded-full text-xs font-medium border transition-all',
+                        vu.id === activeSpeakerId
+                          ? 'bg-primary text-primary-foreground border-primary'
+                          : 'bg-card border-border text-muted-foreground hover:border-primary/40'
+                      )}
+                    >
+                      {vu.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {allDisplaySegments.length === 0 && (
                 <div className="text-center py-16 text-muted-foreground">
                   <MessageSquare className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p className="font-medium">Transcript will appear here in real-time</p>
-                  <p className="text-sm mt-1">
-                    {AZURE_CONFIGURED
-                      ? 'Using Azure Speech-to-Text with speaker identification'
-                      : 'Using browser Web Speech API (add Azure credentials for speaker ID)'}
+                  <p className="font-medium">Transcript will appear here</p>
+                  <p className="text-sm mt-1 max-w-xs mx-auto">
+                    {enrolledUsers.length > 0
+                      ? 'Select who\'s speaking on the left, then click Start Recording.'
+                      : 'Click Start Recording to begin. Enroll voices to label speakers by name.'}
                   </p>
                   <Button variant="outline" onClick={startRecording} className="mt-4" disabled={isRecording || connectionStatus === 'connecting'}>
                     <Mic className="h-4 w-4 mr-2" />Start Recording
@@ -336,26 +417,20 @@ export default function MeetingRoomPage() {
 
               {allDisplaySegments.map((seg, i) => {
                 const isFinal = 'isFinal' in seg ? seg.isFinal : true;
+                const colorClass = seg.isUnknown
+                  ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/30'
+                  : 'bg-secondary/30 hover:bg-secondary/50';
+                const badgeColor = speakerColors[seg.speakerName] ?? 'bg-primary/10 text-primary';
+
                 return (
                   <div
                     key={'id' in seg ? seg.id : i}
-                    className={cn(
-                      'p-3 rounded-lg transition-all',
-                      !isFinal && 'opacity-60 italic',
-                      seg.isUnknown ? 'bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800/30' : 'bg-secondary/30 hover:bg-secondary/50'
-                    )}
+                    className={cn('p-3 rounded-lg transition-all', !isFinal && 'opacity-60 italic', colorClass)}
                   >
-                    <div className="flex items-start justify-between gap-2 mb-1">
+                    <div className="flex items-start justify-between gap-2 mb-1.5">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className={cn(
-                          'inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold',
-                          seg.isUnknown
-                            ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-200'
-                            : 'bg-primary/10 text-primary'
-                        )}>
-                          {seg.isUnknown
-                            ? <UserX className="h-3 w-3" />
-                            : <UserCheck className="h-3 w-3" />}
+                        <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold', seg.isUnknown ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' : badgeColor)}>
+                          {seg.isUnknown ? <UserX className="h-3 w-3" /> : <UserCheck className="h-3 w-3" />}
                           {seg.speakerName}
                         </span>
                         <span className="text-xs text-muted-foreground">
@@ -363,17 +438,6 @@ export default function MeetingRoomPage() {
                         </span>
                         {!isFinal && <Badge variant="outline" className="text-xs py-0 px-1">live</Badge>}
                       </div>
-                      {seg.confidence > 0 && (
-                        <Badge
-                          variant="outline"
-                          className={cn(
-                            'text-xs flex-shrink-0',
-                            seg.confidence >= 0.8 ? 'border-green-500 text-green-600' : seg.confidence >= 0.5 ? 'border-yellow-500 text-yellow-600' : 'border-red-400 text-red-500'
-                          )}
-                        >
-                          {Math.round(seg.confidence * 100)}%
-                        </Badge>
-                      )}
                     </div>
                     <p className="text-sm leading-relaxed">{seg.text}</p>
                   </div>
@@ -384,8 +448,8 @@ export default function MeetingRoomPage() {
           </ScrollArea>
         </main>
 
-        {/* Stats sidebar */}
-        <aside className="w-56 border-l border-border bg-card hidden xl:flex flex-col p-4 gap-4">
+        {/* Right: session stats */}
+        <aside className="w-52 border-l border-border bg-card hidden xl:flex flex-col p-4 gap-4">
           <Card>
             <CardHeader className="pb-2 pt-4 px-4"><CardTitle className="text-sm">Session</CardTitle></CardHeader>
             <CardContent className="px-4 pb-4 space-y-2 text-sm">
@@ -404,29 +468,27 @@ export default function MeetingRoomPage() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader className="pb-2 pt-4 px-4"><CardTitle className="text-sm">Recognition</CardTitle></CardHeader>
-            <CardContent className="px-4 pb-4 space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Engine</span>
-                <span className="font-medium">{AZURE_CONFIGURED ? 'Azure' : 'Browser'}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Speaker ID</span>
-                <span className={cn('font-medium', AZURE_CONFIGURED ? 'text-green-600' : 'text-muted-foreground')}>
-                  {AZURE_CONFIGURED ? 'Active' : 'Off'}
-                </span>
-              </div>
-              {savedSegments.length > 0 && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Avg conf.</span>
-                  <span className="font-medium">
-                    {Math.round(savedSegments.filter((s) => s.speaker_confidence > 0).reduce((a, s) => a + s.speaker_confidence, 0) / Math.max(1, savedSegments.filter((s) => s.speaker_confidence > 0).length) * 100)}%
-                  </span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* Speaker breakdown */}
+          {savedSegments.length > 0 && (
+            <Card>
+              <CardHeader className="pb-2 pt-4 px-4"><CardTitle className="text-sm">Speakers</CardTitle></CardHeader>
+              <CardContent className="px-4 pb-4 space-y-2">
+                {Array.from(new Set(savedSegments.map((s) => s.speaker_name))).map((name) => {
+                  const count = savedSegments.filter((s) => s.speaker_name === name).length;
+                  const color = speakerColors[name] ?? 'bg-muted text-muted-foreground';
+                  return (
+                    <div key={name} className="flex items-center gap-2">
+                      <div className={cn('w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0', color)}>
+                        {name.charAt(0)}
+                      </div>
+                      <span className="text-xs truncate flex-1">{name}</span>
+                      <span className="text-xs text-muted-foreground flex-shrink-0">{count}</span>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
         </aside>
       </div>
     </div>

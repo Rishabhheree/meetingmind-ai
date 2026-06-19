@@ -339,12 +339,12 @@ export function createAzureTranscriber(params: {
 // Returns a mock transcriber that uses the Web Speech API
 
 export function createFallbackTranscriber(params: {
-  displayName: string;
+  getDisplayName: () => string;
   onSegment: (segment: TranscribedSegment) => void;
   onError: (error: string) => void;
   onStatusChange: (status: 'connecting' | 'connected' | 'stopped' | 'error') => void;
 }): AzureTranscriber {
-  const { displayName, onSegment, onError, onStatusChange } = params;
+  const { getDisplayName, onSegment, onError, onStatusChange } = params;
   let recognition: SpeechRecognition | null = null;
   let stream: MediaStream | null = null;
   let startTime = 0;
@@ -373,7 +373,7 @@ export function createFallbackTranscriber(params: {
           const text = result[0].transcript;
           const isFinal = result.isFinal;
           onSegment({
-            speakerName: displayName,
+            speakerName: getDisplayName(),
             speakerId: 'local',
             text,
             confidence: result[0].confidence || 0.9,
