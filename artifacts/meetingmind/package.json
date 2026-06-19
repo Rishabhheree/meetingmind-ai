@@ -76,6 +76,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.108.2",
-    "idb": "^8.0.3"
+    "idb": "^8.0.3",
+    "microsoft-cognitiveservices-speech-sdk": "^1.50.0"
   }
 }

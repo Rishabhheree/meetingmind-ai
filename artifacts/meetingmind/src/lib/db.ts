@@ -84,6 +84,7 @@ export interface SpeakerProfileRecord {
   enrollment_status: 'pending' | 'enrolling' | 'enrolled';
   enrollment_count: number;
   confidence: number;
+  azure_profile_id: string | null;
   updatedAt: string;
 }
 
@@ -181,6 +182,7 @@ export async function createUser(params: {
     enrollment_status: 'pending',
     enrollment_count: 0,
     confidence: 0,
+    azure_profile_id: null,
     updatedAt: new Date().toISOString(),
   });
 
@@ -412,6 +414,7 @@ export async function updateSpeakerProfile(userId: string, updates: Partial<Omit
       enrollment_status: 'pending',
       enrollment_count: 0,
       confidence: 0,
+      azure_profile_id: null,
       ...updates,
       updatedAt: new Date().toISOString(),
     });
@@ -419,7 +422,12 @@ export async function updateSpeakerProfile(userId: string, updates: Partial<Omit
 }
 
 export async function resetSpeakerProfile(userId: string): Promise<void> {
-  await updateSpeakerProfile(userId, { enrollment_status: 'pending', enrollment_count: 0, confidence: 0 });
+  await updateSpeakerProfile(userId, {
+    enrollment_status: 'pending',
+    enrollment_count: 0,
+    confidence: 0,
+    azure_profile_id: null,
+  });
 }
 
 // ── Users (admin) ─────────────────────────────────────────────────────────────
